@@ -98,56 +98,61 @@ def print_colored(text: str, color: Tuple[int, int, int], end: str = ''):
     colored_text = apply_color_and_format(text, color)
     print(colored_text, end=end, flush=True)
 
-def visualize_sampler_metrics(entropies, varentropies, sampler_states):
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 4), height_ratios=[4, 1], sharex=True)
+def visualize_sampler_metrics(entropies, varentropies, angles, sampler_states):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), height_ratios=[4, 1], sharex=True)
 
-        # Plot entropy and varentropy
-        x = range(len(entropies))
-        ax1.plot(x, entropies, label='Entropy', color='blue')
-        ax1.plot(x, varentropies, label='Varentropy', color='red')
-        ax1.set_ylabel('Value')
-        ax1.set_title('Entropy and Varentropy over Generation Steps')
-        ax1.legend()
-        ax1.grid(True)
+    # Plot entropy and varentropy
+    x = range(len(entropies))
+    ax1.plot(x, entropies, label='Entropy', color='blue')
+    ax1.plot(x, varentropies, label='Varentropy', color='red')
+    ax1.set_ylabel('Entropy / Varentropy')
+    ax1.set_title('Entropy, Varentropy, and Angles over Generation Steps')
+    ax1.legend(loc='upper left')
+    ax1.grid(True)
 
-        # Define colors in the same order as SamplerState
-        colors = ['lightblue', 'lightgreen', 'orange', 'pink', 'purple']
-        cmap = ListedColormap(colors)
+    # Create secondary y-axis for angles
+    ax1_twin = ax1.twinx()
+    ax1_twin.bar(x, angles, alpha=0.3, color='green', label='Angles')
+    ax1_twin.set_ylabel('Euclidean time rotation')
+    ax1_twin.legend(loc='upper right')
 
-        # Explicitly map each SamplerState to its corresponding index
-        state_to_num = {
-            SamplerState.FLOWING: 0,
-            SamplerState.TREADING: 1,
-            SamplerState.EXPLORING: 2,
-            SamplerState.RESAMPLING: 3,
-            SamplerState.ADAPTIVE: 4
-        }
+    # Define colors in the same order as SamplerState
+    colors = ['lightblue', 'lightgreen', 'orange', 'pink', 'purple']
+    cmap = ListedColormap(colors)
 
-        # Map sampler states to numerical values
-        numeric_states = [state_to_num[state] for state in sampler_states]
+    # Explicitly map each SamplerState to its corresponding index
+    state_to_num = {
+        SamplerState.FLOWING: 0,
+        SamplerState.TREADING: 1,
+        SamplerState.EXPLORING: 2,
+        SamplerState.RESAMPLING: 3,
+        SamplerState.ADAPTIVE: 4
+    }
 
-        # Define normalization to map each integer to a color without interpolation
-        norm = BoundaryNorm(boundaries=[-0.5 + i for i in range(len(colors)+1)],
-                          ncolors=cmap.N,
-                          clip=True)
+    # Map sampler states to numerical values
+    numeric_states = [state_to_num[state] for state in sampler_states]
 
-        # Plot color-coded sampler states
-        im = ax2.imshow([numeric_states], cmap=cmap, norm=norm, aspect='auto',
-                      extent=[0, len(numeric_states), 0, 1])
-        ax2.set_yticks([])
-        ax2.set_title('Sampler State over Generation Steps')
+    # Define normalization to map each integer to a color without interpolation
+    norm = BoundaryNorm(boundaries=[-0.5 + i for i in range(len(colors)+1)],
+                        ncolors=cmap.N,
+                        clip=True)
 
-        mapped_colors = [colors[state_to_num[state]] for state in sampler_states]
+    # Plot color-coded sampler states
+    im = ax2.imshow([numeric_states], cmap=cmap, norm=norm, aspect='auto',
+                    extent=[0, len(numeric_states), 0, 1])
+    ax2.set_yticks([])
+    ax2.set_title('Sampler State over Generation Steps')
+    ax2.set_xlabel('Generation Steps')
 
-        # Create a custom legend for sampler states
-        legend_elements = [Patch(facecolor=colors[state_to_num[state]], edgecolor='black', label=state.value)
-                          for state in SamplerState]
-        ax2.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, -0.15),
-                  ncol=3, fancybox=True, shadow=True)
+    # Create a custom legend for sampler states
+    legend_elements = [Patch(facecolor=colors[state_to_num[state]], edgecolor='black', label=state.value)
+                       for state in SamplerState]
+    ax2.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, -0.15),
+               ncol=3, fancybox=True, shadow=True)
 
-        plt.tight_layout()
-        plt.savefig('sampler_metrics_plot.png', dpi=300, bbox_inches='tight')
-        plt.close()  # Close the figure to free up memory
+    plt.tight_layout()
+    plt.savefig('sampler_metrics_plot.png', dpi=300, bbox_inches='tight')
+    plt.close()  # Close the figure to free up memory
 
 def visualize_wick_rotation(logits, rotated_logits, angles):
     # Convert angles to numpy array
@@ -231,8 +236,8 @@ def main():
          if key in metrics:
             metrics_data[key].append(metrics[key].item())
 
-      wick_history['logits'].append(logits.detach().cpu().to(torch.float32).numpy()) 
-      wick_history['rotated_logits'].append(logits.detach().cpu().to(torch.float32).numpy())
+      #wick_history['logits'].append(logits.detach().cpu().to(torch.float32).numpy()) 
+      #wick_history['rotated_logits'].append(logits.detach().cpu().to(torch.float32).numpy())
       wick_history['angles'].append(0)
       gen_tokens = next_token
       print(tokenizer.decode([next_token.item()]), end='', flush=True)
@@ -244,8 +249,8 @@ def main():
         cur_pos += 1
         logits, kvcache, scores, stats = xfmr(xfmr_weights, model_params, next_token, cur_pos, freqs_cis[cur_pos:cur_pos+1], kvcache)
         next_token, color, sampler_state, wick_data = sample(gen_tokens, logits, scores, cfg=sampler_cfg)
-        wick_history['logits'].append(wick_data['logits'].detach().cpu().to(torch.float32).numpy())
-        wick_history['rotated_logits'].append(wick_data['rotated_logits'][0].detach().cpu().to(torch.float32).numpy())
+        #wick_history['logits'].append(wick_data['logits'].detach().cpu().to(torch.float32).numpy())
+        #wick_history['rotated_logits'].append(wick_data['rotated_logits'][0].detach().cpu().to(torch.float32).numpy())
         wick_history['angles'].append(wick_data['angles'][0].detach().cpu().real.numpy())   
 
         sampler_states.append(sampler_state)
@@ -258,12 +263,12 @@ def main():
         out_token = tokenizer.decode(next_token.tolist()[0])
         print_colored(out_token, color, end='')
         if torch.isin(next_token, stop).any():
-          visualize_sampler_metrics(metrics_data['logits_entropy'], metrics_data['logits_varentropy'], sampler_states)
+          visualize_sampler_metrics(metrics_data['logits_entropy'], metrics_data['logits_varentropy'],wick_history['angles'], sampler_states)
           #visualize_wick_rotation(wick_history['logits'], wick_history['rotated_logits'], wick_history['angles'])
           break
 
     #print(prompt4)
-    generate(xfmr_weights, model_params, raw_tokens1)
+    generate(xfmr_weights, model_params, raw_tokens4)
 
 if __name__ == '__main__':
   tyro.cli(main)

@@ -131,14 +131,19 @@ def get_color_for_metric(metrics: Dict[str, float], config) -> Tuple[int, int, i
 
     return (red, green, 0)
 
-def _wick_rotation(logits: torch.Tensor, entropy, varentropy, magnitude= False, k=0.5):
+def _wick_rotation(logits: torch.Tensor, entropy, varentropy, magnitude= False, k=0.7):
 
     norm_entropy = torch.clamp(entropy / 5, 0, 1)
     norm_varentropy = torch.clamp(varentropy / 20, 0, 1)
     tau = 1j * norm_varentropy * norm_entropy
+
+    # Calculate uncertainty factor
+    uncertainty = norm_entropy * norm_varentropy
+
+    tau = 1j * torch.pow(uncertainty, 0.5)
     
     # Perform the rotation
-    rotated_logits = logits * torch.exp(torch.pi * k * tau)
+    rotated_logits = logits * torch.exp(torch.pi/2 * k * tau)
 
     if magnitude:
         return torch.abs(rotated_logits), torch.exp(torch.pi * k * tau)
