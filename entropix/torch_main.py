@@ -106,13 +106,13 @@ def visualize_sampler_metrics(entropies, varentropies, angles, sampler_states):
     ax1.plot(x, entropies, label='Entropy', color='blue')
     ax1.plot(x, varentropies, label='Varentropy', color='red')
     ax1.set_ylabel('Entropy / Varentropy')
-    ax1.set_title('Entropy, Varentropy, and Angles over Generation Steps')
+    ax1.set_title('Entropy, Varentropy, and Euclidean time rotation over Generation Steps')
     ax1.legend(loc='upper left')
     ax1.grid(True)
 
     # Create secondary y-axis for angles
     ax1_twin = ax1.twinx()
-    ax1_twin.bar(x, angles, alpha=0.3, color='green', label='Angles')
+    ax1_twin.bar(x, angles, alpha=0.3, color='green', label='Euclidean time rotation')
     ax1_twin.set_ylabel('Euclidean time rotation')
     ax1_twin.legend(loc='upper right')
 
