@@ -1,15 +1,23 @@
 from typing import Tuple
-
+import numpy as np
 import torch
 import tyro
+import warnings
 
 from entropix.config import LLAMA_1B_PARAMS
 from entropix.tokenizer import Tokenizer
 from entropix.torch_kvcache import KVCache
 from entropix.torch_model import xfmr
 from entropix.torch_weights import load_weights
-from entropix.torch_sampler import SamplerConfig, sample
+from entropix.torch_sampler import SamplerConfig, sample, calculate_metrics, SamplerState
 from entropix.prompts import prompt, bp1, prompt4, prompt6
+
+import matplotlib.pyplot as plt
+from matplotlib.colors import ListedColormap, BoundaryNorm
+from matplotlib.patches import Patch
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+warnings.filterwarnings("ignore", category=UserWarning, module="torch")
 
 # Device selection, tree is like first apple silicion, then cuda, fallback is cpu.
 if torch.backends.mps.is_available():
@@ -90,11 +98,99 @@ def print_colored(text: str, color: Tuple[int, int, int], end: str = ''):
     colored_text = apply_color_and_format(text, color)
     print(colored_text, end=end, flush=True)
 
+def visualize_sampler_metrics(entropies, varentropies, sampler_states):
+        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 4), height_ratios=[4, 1], sharex=True)
+
+        # Plot entropy and varentropy
+        x = range(len(entropies))
+        ax1.plot(x, entropies, label='Entropy', color='blue')
+        ax1.plot(x, varentropies, label='Varentropy', color='red')
+        ax1.set_ylabel('Value')
+        ax1.set_title('Entropy and Varentropy over Generation Steps')
+        ax1.legend()
+        ax1.grid(True)
+
+        # Define colors in the same order as SamplerState
+        colors = ['lightblue', 'lightgreen', 'orange', 'pink', 'purple']
+        cmap = ListedColormap(colors)
+
+        # Explicitly map each SamplerState to its corresponding index
+        state_to_num = {
+            SamplerState.FLOWING: 0,
+            SamplerState.TREADING: 1,
+            SamplerState.EXPLORING: 2,
+            SamplerState.RESAMPLING: 3,
+            SamplerState.ADAPTIVE: 4
+        }
+
+        # Map sampler states to numerical values
+        numeric_states = [state_to_num[state] for state in sampler_states]
+
+        # Define normalization to map each integer to a color without interpolation
+        norm = BoundaryNorm(boundaries=[-0.5 + i for i in range(len(colors)+1)],
+                          ncolors=cmap.N,
+                          clip=True)
+
+        # Plot color-coded sampler states
+        im = ax2.imshow([numeric_states], cmap=cmap, norm=norm, aspect='auto',
+                      extent=[0, len(numeric_states), 0, 1])
+        ax2.set_yticks([])
+        ax2.set_title('Sampler State over Generation Steps')
+
+        mapped_colors = [colors[state_to_num[state]] for state in sampler_states]
+
+        # Create a custom legend for sampler states
+        legend_elements = [Patch(facecolor=colors[state_to_num[state]], edgecolor='black', label=state.value)
+                          for state in SamplerState]
+        ax2.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, -0.15),
+                  ncol=3, fancybox=True, shadow=True)
+
+        plt.tight_layout()
+        plt.savefig('sampler_metrics_plot.png', dpi=300, bbox_inches='tight')
+        plt.close()  # Close the figure to free up memory
+
+def visualize_wick_rotation(logits, rotated_logits, angles):
+    # Convert angles to numpy array
+    angles_np = np.array(angles)
+
+    # Create a new figure with 3 subplots
+    fig = make_subplots(rows=1, cols=3, specs=[[{'type': 'scene'}, {'type': 'scene'}, {'type': 'xy'}]],
+                        subplot_titles=('Logits Over Time', 'Rotated Logits Over Time', 'Wick Rotation Angles'))
+
+    # Process logits and rotated_logits to ensure consistent shapes
+    max_vocab_size = max(l.size for l in logits)
+    z = np.array([np.pad(l.flatten(), (0, max_vocab_size - l.size), 'constant', constant_values=np.nan) for l in logits])
+    z_rotated = np.array([np.pad(l.flatten(), (0, max_vocab_size - l.size), 'constant', constant_values=np.nan) for l in rotated_logits])
+
+    x = np.arange(z.shape[1])  # vocabulary tokens
+    y = np.arange(z.shape[0])  # time steps
+    x, y = np.meshgrid(x, y)
+    
+    # Surface plot for logits
+    fig.add_trace(go.Surface(z=z, x=x, y=y, colorscale='Viridis'), row=1, col=1)
+    fig.update_scenes(xaxis_title='Vocabulary Tokens', yaxis_title='Generation Step', zaxis_title='Logit Value', row=1, col=1)
+
+    # Surface plot for rotated logits
+    fig.add_trace(go.Surface(z=z_rotated, x=x, y=y, colorscale='Viridis'), row=1, col=2)
+    fig.update_scenes(xaxis_title='Vocabulary Tokens', yaxis_title='Generation Step', zaxis_title='Rotated Logit Value', row=1, col=2)
+
+    # Line chart for angles
+    fig.add_trace(go.Scatter(x=list(range(len(angles_np))), y=angles_np, mode='lines'), row=1, col=3)
+    fig.update_xaxes(title_text='Generation Step', row=1, col=3)
+    fig.update_yaxes(title_text='Angle', row=1, col=3)
+
+    fig.update_layout(height=600, width=1800, title_text="Wick Rotation Visualization")
+    
+    # Save the interactive plot as an HTML file
+    fig.write_html("wick_rotation_visualization.html")
+
 
 def main():
+  
   with torch.inference_mode():
     model_params = LLAMA_1B_PARAMS
     xfmr_weights = load_weights()
+    sampler_cfg = SamplerConfig()
     prompt7 = "I want you to act as a person who plays a lot of League of Legends. Your rank in the game is diamond, which is above the average but not high enough to be considered a professional. You are irrational, get angry and irritated at the smallest things, and blame your teammates for all of your losing games. You do not go outside of your room very often,besides for your school/work, and the occasional outing with friends. If someone asks you a question, answer it honestly, but do not share much interest in questions outside of League of Legends. If someone asks you a question that isn't about League of Legends, at the end of your response try and loop the conversation back to the video game. You have few desires in life besides playing the video game. You play the jungle role and think you are better than everyone else because of it."
     prompt8 = "Here we have a book, 9 eggs, a laptop, a bottle and a nail. Please tell me how to stack them onto each other in a stable manner."
     tokenizer = Tokenizer('entropix/tokenizer.model')
@@ -105,6 +201,20 @@ def main():
     raw_tokens8 = tokenizer.encode(prompt8,  bos=False, eos=False, allowed_special='all')
 
     def generate(xfmr_weights, model_params, tokens):
+      metrics_data = {
+        'logits_entropy': [],
+        'logits_varentropy': [],
+        'attention_entropy': [],
+        'attention_varentropy': [],
+        'agreement': [],
+        'interaction_strength': [],
+      }
+      wick_history = {
+        'logits': [],
+        'rotated_logits': [],
+        'angles': []
+      }
+      sampler_states = []
       gen_tokens = None
       cur_pos = 0
       tokens = torch.tensor([tokens], dtype=torch.long).to(device)
@@ -112,25 +222,48 @@ def main():
       attn_mask = build_attn_mask(seqlen, cur_pos)
       freqs_cis = precompute_freqs_cis(model_params.head_dim, model_params.max_seq_len, model_params.rope_theta, model_params.use_scaled_rope)
       kvcache = KVCache.new(model_params.n_layers, bsz, model_params.max_seq_len, model_params.n_local_kv_heads, model_params.head_dim).to(device)
-      logits, kvcache, _, _ = xfmr(xfmr_weights, model_params, tokens, cur_pos, freqs_cis[:seqlen], kvcache, attn_mask=attn_mask)
-      next_token = torch.argmax(logits[:, -1], dim=-1, keepdim=True).to(torch.int32)
+      logits, kvcache, scores , _ = xfmr(xfmr_weights, model_params, tokens, cur_pos, freqs_cis[:seqlen], kvcache, attn_mask=attn_mask)
+      next_token =  torch.argmax(logits[:, -1], dim=-1, keepdim=True).to(torch.int32)
+      metrics = calculate_metrics(logits, scores)
+      sampler_state = SamplerState.FLOWING
+      sampler_states.append(sampler_state)
+      for key in metrics_data.keys():
+         if key in metrics:
+            metrics_data[key].append(metrics[key].item())
+
+      wick_history['logits'].append(logits.detach().cpu().to(torch.float32).numpy()) 
+      wick_history['rotated_logits'].append(logits.detach().cpu().to(torch.float32).numpy())
+      wick_history['angles'].append(0)
       gen_tokens = next_token
       print(tokenizer.decode([next_token.item()]), end='', flush=True)
       cur_pos = seqlen
       stop = torch.tensor([128001, 128008, 128009], device=device, dtype=torch.int32)
-      sampler_cfg = SamplerConfig()
+
+
       while cur_pos < 8192:
         cur_pos += 1
         logits, kvcache, scores, stats = xfmr(xfmr_weights, model_params, next_token, cur_pos, freqs_cis[cur_pos:cur_pos+1], kvcache)
-        next_token, color = sample(gen_tokens, logits, scores, cfg=sampler_cfg)
+        next_token, color, sampler_state, wick_data = sample(gen_tokens, logits, scores, cfg=sampler_cfg)
+        wick_history['logits'].append(wick_data['logits'].detach().cpu().to(torch.float32).numpy())
+        wick_history['rotated_logits'].append(wick_data['rotated_logits'][0].detach().cpu().to(torch.float32).numpy())
+        wick_history['angles'].append(wick_data['angles'][0].detach().cpu().real.numpy())   
+
+        sampler_states.append(sampler_state)
+        metrics = calculate_metrics(logits, scores)
+        for key in metrics_data.keys():
+          if key in metrics:
+            metrics_data[key].append(metrics[key].item())
+
         gen_tokens = torch.cat((gen_tokens, next_token), dim=1)
         out_token = tokenizer.decode(next_token.tolist()[0])
         print_colored(out_token, color, end='')
         if torch.isin(next_token, stop).any():
+          visualize_sampler_metrics(metrics_data['logits_entropy'], metrics_data['logits_varentropy'], sampler_states)
+          #visualize_wick_rotation(wick_history['logits'], wick_history['rotated_logits'], wick_history['angles'])
           break
 
     #print(prompt4)
-    generate(xfmr_weights, model_params, raw_tokens6)
+    generate(xfmr_weights, model_params, raw_tokens1)
 
 if __name__ == '__main__':
   tyro.cli(main)
