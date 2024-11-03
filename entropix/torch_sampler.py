@@ -131,24 +131,19 @@ def get_color_for_metric(metrics: Dict[str, float], config) -> Tuple[int, int, i
 
     return (red, green, 0)
 
-def _wick_rotation(logits: torch.Tensor, entropy, varentropy, magnitude= False, k=0.7):
+def _wick_rotation(logits: torch.Tensor, entropy, varentropy, attn_entropy, attn_varentropy, magnitude= False, k=0.75):
 
-    norm_entropy = torch.clamp(entropy / 5, 0, 1)
-    norm_varentropy = torch.clamp(varentropy / 20, 0, 1)
-    tau = 1j * norm_varentropy * norm_entropy
-
-    # Calculate uncertainty factor
-    uncertainty = norm_entropy * norm_varentropy
-
-    tau = 1j * torch.pow(uncertainty, 0.5)
+    norm_entropy = torch.clamp(entropy / 5, 0, 5)
+    norm_varentropy = torch.clamp(varentropy / 20, -6, 6)
+    tau = 1j * torch.pow(((torch.sqrt(norm_varentropy) / norm_entropy) * attn_varentropy), 2)
     
     # Perform the rotation
-    rotated_logits = logits * torch.exp(torch.pi/2 * k * tau)
+    rotated_logits = logits * torch.exp(torch.pi**k * tau)
 
     if magnitude:
-        return torch.abs(rotated_logits), torch.exp(torch.pi * k * tau)
+        return torch.abs(rotated_logits), torch.exp(torch.pi**k * tau)
     else:
-        return torch.real(rotated_logits), torch.exp(torch.pi * k * tau)
+        return torch.real(rotated_logits), torch.exp(torch.pi**k * tau)
 
 def calculate_varentropy_logsoftmax(logits: torch.Tensor, dim: int = -1) -> Tuple[torch.Tensor, torch.Tensor]:
     """Calculate the entropy and varentropy of the probability distribution using logsoftmax."""
@@ -251,7 +246,7 @@ def sample(gen_tokens: torch.Tensor, logits: torch.Tensor, attention_scores: tor
         sampler_state = SamplerState.EXPLORING
         #temp_adj = cfg.low_entropy_interaction_strength_offset + cfg.low_entropy_interaction_strength_coefficient * interaction_strength  # Increase temperature based on interaction strength
         top_k_adj = max(5, int(cfg.top_k * (1 + 0.5 * (1 - agreement))))  # Increase top_k when agreement is low
-        logits, angle = _wick_rotation(logits, ent, vent, magnitude=True)
+        logits, angle = _wick_rotation(logits, ent, vent, attn_ent, attn_vent, magnitude=True)
         wick_data['rotated_logits'].append(logits)
         wick_data['angles'].append(angle)
         return _sample(
@@ -274,7 +269,7 @@ def sample(gen_tokens: torch.Tensor, logits: torch.Tensor, attention_scores: tor
         temp_adj = cfg.high_entropy_varentropy_attention_offset + cfg.high_entropy_varentropy_attention_coefficient * attn_vent  # Increase temperature based on attention varentropy
         top_p_adj = max(0.5, top_p - cfg.high_entropy_attention_coefficient * attn_ent)  # Decrease top_p when attention entropy is high
         wick_data['logits'].append(logits)
-        logits, angle = _wick_rotation(logits, ent, vent, magnitude=True)
+        logits, angle = _wick_rotation(logits, ent, vent, attn_ent, attn_vent, magnitude=True)
         wick_data['rotated_logits'].append(logits)
         wick_data['angles'].append(angle)
         return _sample(
@@ -305,36 +300,39 @@ def sample(gen_tokens: torch.Tensor, logits: torch.Tensor, attention_scores: tor
     min_p = torch.clamp(cfg.min_probability * (1 - cfg.adaptive_min_p_coefficient* vent), 0.01, 0.5)
 
     samples = []
-    logits, angle = _wick_rotation(logits, ent, vent, magnitude=False)
+    logits, angle = _wick_rotation(logits, ent, vent, attn_ent, attn_vent, magnitude=False)
     wick_data['rotated_logits'].append(logits)
     wick_data['angles'].append(angle)
-    for _ in range(cfg.number_of_adaptive_samples):
-        sample = _sample(logits, temperature=1, top_p=top_p, top_k=top_k, min_p=min_p)
-        samples.append(sample)
 
-    def score_sample(sample):
-        # Flatten the sample tensor and convert to long (int64)
-        sample_flat = sample.flatten().to(torch.long)
+    sample = _sample(logits, temperature=1, top_p=0.9, top_k=27, min_p=0.03)
+    return sample, color, sampler_state, wick_data
+    # for _ in range(cfg.number_of_adaptive_samples):
+    #     sample = _sample(logits, temperature=1, top_p=0.9, top_k=27, min_p=0.03)
+    #     samples.append(sample)
 
-        # Create one-hot encoding
-        one_hot = F.one_hot(sample_flat, logits.shape[-1])
+    # def score_sample(sample):
+    #     # Flatten the sample tensor and convert to long (int64)
+    #     sample_flat = sample.flatten().to(torch.long)
 
-        # Reshape log_softmax output to match one_hot
-        log_probs = F.log_softmax(logits, dim=-1).view(-1, logits.shape[-1])
+    #     # Create one-hot encoding
+    #     one_hot = F.one_hot(sample_flat, logits.shape[-1])
 
-        # Calculate log probability
-        log_prob = torch.sum(log_probs * one_hot)
+    #     # Reshape log_softmax output to match one_hot
+    #     log_probs = F.log_softmax(logits, dim=-1).view(-1, logits.shape[-1])
 
-        confidence_score = (
-            (1 - ent / cfg.high_logits_entropy_threshold) * cfg.adaptive_score_logits_entropy_coefficient +
-            (1 - attn_ent / cfg.high_attention_entropy_threshold) * cfg.adaptive_score_attention_entropy_coefficient +
-            (1 - vent / cfg.high_logits_varentropy_threshold) * cfg.adaptive_score_logits_varentropy_coefficient +
-            (1 - attn_vent / cfg.high_attention_varentropy_threshold) * cfg.adaptive_score_attention_varentropy_coefficient +
-            (agreement / cfg.high_agreement_threshold) * cfg.adaptive_score_agreement_coefficient +
-            (interaction_strength / cfg.high_interaction_strength_threshold) * cfg.adaptive_score_interaction_strength_coefficient
-        )
-        return log_prob + confidence_score
+    #     # Calculate log probability
+    #     log_prob = torch.sum(log_probs * one_hot)
 
-    sample_scores = torch.stack([score_sample(sample) for sample in samples])
-    best_sample_idx = torch.argmax(sample_scores)
-    return samples[best_sample_idx], color, sampler_state, wick_data
+    #     confidence_score = (
+    #         (1 - ent / cfg.high_logits_entropy_threshold) * cfg.adaptive_score_logits_entropy_coefficient +
+    #         (1 - attn_ent / cfg.high_attention_entropy_threshold) * cfg.adaptive_score_attention_entropy_coefficient +
+    #         (1 - vent / cfg.high_logits_varentropy_threshold) * cfg.adaptive_score_logits_varentropy_coefficient +
+    #         (1 - attn_vent / cfg.high_attention_varentropy_threshold) * cfg.adaptive_score_attention_varentropy_coefficient +
+    #         (agreement / cfg.high_agreement_threshold) * cfg.adaptive_score_agreement_coefficient +
+    #         (interaction_strength / cfg.high_interaction_strength_threshold) * cfg.adaptive_score_interaction_strength_coefficient
+    #     )
+    #     return log_prob + confidence_score
+
+    # sample_scores = torch.stack([score_sample(sample) for sample in samples])
+    # best_sample_idx = torch.argmax(sample_scores)
+    # return samples[best_sample_idx], color, sampler_state, wick_data

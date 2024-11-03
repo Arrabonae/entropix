@@ -20,6 +20,8 @@ chex = "^0.1.87"
 tyro = "^0.8.11"
 matplotlib = "^3.9.2"
 plotly = "^5.24.1"
+ipykernel = "^6.29.5"
+accelerate = "^1.0.1"
 
 
 [tool.poetry.group.dev.dependencies]

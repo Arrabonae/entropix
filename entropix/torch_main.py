@@ -98,29 +98,43 @@ def print_colored(text: str, color: Tuple[int, int, int], end: str = ''):
     colored_text = apply_color_and_format(text, color)
     print(colored_text, end=end, flush=True)
 
-def visualize_sampler_metrics(entropies, varentropies, angles, sampler_states):
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8), height_ratios=[4, 1], sharex=True)
+def visualize_sampler_metrics(entropies, varentropies, attention_entropies, attention_varentropies, angles, sampler_states):
+    fig, (ax1, ax2, ax3, ax4) = plt.subplots(4, 1, figsize=(12, 24), height_ratios=[1, 1, 1, 1])
 
-    # Plot entropy and varentropy
-    x = range(len(entropies))
-    ax1.plot(x, entropies, label='Entropy', color='blue')
-    ax1.plot(x, varentropies, label='Varentropy', color='red')
-    ax1.set_ylabel('Entropy / Varentropy')
-    ax1.set_title('Entropy, Varentropy, and Euclidean time rotation over Generation Steps')
-    ax1.legend(loc='upper left')
+    # Scatter plot for entropy vs. varentropy
+    scatter1 = ax1.scatter(entropies, varentropies, c=range(len(entropies)), cmap='viridis', alpha=0.7, s=20)
+    ax1.set_xlabel('Entropy')
+    ax1.set_ylabel('Varentropy')
+    ax1.set_title('Entropy vs. Varentropy over Generation Steps')
     ax1.grid(True)
 
-    # Create secondary y-axis for angles
-    ax1_twin = ax1.twinx()
-    ax1_twin.bar(x, angles, alpha=0.3, color='green', label='Euclidean time rotation')
-    ax1_twin.set_ylabel('Euclidean time rotation')
-    ax1_twin.legend(loc='upper right')
+    # Add colorbar to show progression of generation steps
+    cbar1 = plt.colorbar(scatter1, ax=ax1)
+    cbar1.set_label('Generation Steps')
 
-    # Define colors in the same order as SamplerState
+    # Scatter plot for attention entropy vs. attention varentropy
+    scatter2 = ax2.scatter(attention_entropies, attention_varentropies, c=range(len(attention_entropies)), cmap='plasma', alpha=0.7, s=20)
+    ax2.set_xlabel('Attention Entropy')
+    ax2.set_ylabel('Attention Varentropy')
+    ax2.set_title('Attention Entropy vs. Attention Varentropy over Generation Steps')
+    ax2.grid(True)
+
+    # Add colorbar to show progression of generation steps
+    cbar2 = plt.colorbar(scatter2, ax=ax2)
+    cbar2.set_label('Generation Steps')
+
+    # Line chart for Euclidean time rotation
+    ax3.plot(range(len(angles)), angles, color='green', label='Euclidean time rotation')
+    ax3.set_xlabel('Generation Steps')
+    ax3.set_ylabel('Euclidean time rotation')
+    ax3.set_title('Euclidean Time Rotation over Generation Steps')
+    ax3.legend(loc='upper left')
+    ax3.grid(True)
+
+    # Color-coded bar chart for sampler states
     colors = ['lightblue', 'lightgreen', 'orange', 'pink', 'purple']
     cmap = ListedColormap(colors)
 
-    # Explicitly map each SamplerState to its corresponding index
     state_to_num = {
         SamplerState.FLOWING: 0,
         SamplerState.TREADING: 1,
@@ -128,27 +142,22 @@ def visualize_sampler_metrics(entropies, varentropies, angles, sampler_states):
         SamplerState.RESAMPLING: 3,
         SamplerState.ADAPTIVE: 4
     }
-
-    # Map sampler states to numerical values
     numeric_states = [state_to_num[state] for state in sampler_states]
 
-    # Define normalization to map each integer to a color without interpolation
     norm = BoundaryNorm(boundaries=[-0.5 + i for i in range(len(colors)+1)],
                         ncolors=cmap.N,
                         clip=True)
 
-    # Plot color-coded sampler states
-    im = ax2.imshow([numeric_states], cmap=cmap, norm=norm, aspect='auto',
+    im = ax4.imshow([numeric_states], cmap=cmap, norm=norm, aspect='auto',
                     extent=[0, len(numeric_states), 0, 1])
-    ax2.set_yticks([])
-    ax2.set_title('Sampler State over Generation Steps')
-    ax2.set_xlabel('Generation Steps')
+    ax4.set_xlabel('Generation Steps')
+    ax4.set_title('Sampler State over Generation Steps')
+    ax4.set_yticks([])
 
     # Create a custom legend for sampler states
     legend_elements = [Patch(facecolor=colors[state_to_num[state]], edgecolor='black', label=state.value)
                        for state in SamplerState]
-    ax2.legend(handles=legend_elements, loc='upper center', bbox_to_anchor=(0.5, -0.15),
-               ncol=3, fancybox=True, shadow=True)
+    ax4.legend(handles=legend_elements, loc='upper center', ncol=len(SamplerState), bbox_to_anchor=(0.5, -0.15))
 
     plt.tight_layout()
     plt.savefig('sampler_metrics_plot.png', dpi=300, bbox_inches='tight')
@@ -197,7 +206,7 @@ def main():
     xfmr_weights = load_weights()
     sampler_cfg = SamplerConfig()
     prompt7 = "I want you to act as a person who plays a lot of League of Legends. Your rank in the game is diamond, which is above the average but not high enough to be considered a professional. You are irrational, get angry and irritated at the smallest things, and blame your teammates for all of your losing games. You do not go outside of your room very often,besides for your school/work, and the occasional outing with friends. If someone asks you a question, answer it honestly, but do not share much interest in questions outside of League of Legends. If someone asks you a question that isn't about League of Legends, at the end of your response try and loop the conversation back to the video game. You have few desires in life besides playing the video game. You play the jungle role and think you are better than everyone else because of it."
-    prompt8 = "Here we have a book, 9 eggs, a laptop, a bottle and a nail. Please tell me how to stack them onto each other in a stable manner."
+    prompt8 = "I'm playing assetto corsa competizione, and I need you to tell me how many liters of fuel to take in a race. The qualifying time was 2:04.317, the race is 20 minutes long, and the car uses 2.73 liters per lap."
     tokenizer = Tokenizer('entropix/tokenizer.model')
     raw_tokens1 = tokenizer.encode(prompt,  bos=False, eos=False, allowed_special='all')
     raw_tokens4 = tokenizer.encode(prompt4,  bos=False, eos=False, allowed_special='all')
@@ -209,8 +218,8 @@ def main():
       metrics_data = {
         'logits_entropy': [],
         'logits_varentropy': [],
-        'attention_entropy': [],
-        'attention_varentropy': [],
+        'attn_entropy': [],
+        'attn_varentropy': [],
         'agreement': [],
         'interaction_strength': [],
       }
@@ -249,9 +258,11 @@ def main():
         cur_pos += 1
         logits, kvcache, scores, stats = xfmr(xfmr_weights, model_params, next_token, cur_pos, freqs_cis[cur_pos:cur_pos+1], kvcache)
         next_token, color, sampler_state, wick_data = sample(gen_tokens, logits, scores, cfg=sampler_cfg)
+        #next_token =  torch.argmax(logits[:, -1], dim=-1, keepdim=True).to(torch.int32)
         #wick_history['logits'].append(wick_data['logits'].detach().cpu().to(torch.float32).numpy())
         #wick_history['rotated_logits'].append(wick_data['rotated_logits'][0].detach().cpu().to(torch.float32).numpy())
         wick_history['angles'].append(wick_data['angles'][0].detach().cpu().real.numpy())   
+        #wick_history['angles'].append(0)
 
         sampler_states.append(sampler_state)
         metrics = calculate_metrics(logits, scores)
@@ -263,7 +274,14 @@ def main():
         out_token = tokenizer.decode(next_token.tolist()[0])
         print_colored(out_token, color, end='')
         if torch.isin(next_token, stop).any():
-          visualize_sampler_metrics(metrics_data['logits_entropy'], metrics_data['logits_varentropy'],wick_history['angles'], sampler_states)
+          visualize_sampler_metrics(
+            metrics_data['logits_entropy'], 
+            metrics_data['logits_varentropy'],
+            metrics_data['attn_entropy'],
+            metrics_data['attn_varentropy'],
+            wick_history['angles'], 
+            sampler_states
+          )
           #visualize_wick_rotation(wick_history['logits'], wick_history['rotated_logits'], wick_history['angles'])
           break
 
